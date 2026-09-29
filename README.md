@@ -155,6 +155,8 @@ See [`docs/deployment.md`](docs/deployment.md).
 - [`docs/testing.md`](docs/testing.md) – unit tests, `simulate`, E2E tests, CI
 - [`docs/tutorials/`](docs/tutorials/) – step-by-step GitHub setup guides
   - [Enable private contributions](docs/tutorials/enable-private-contributions.md)
+- [`widgets/`](widgets/) – collection of Markdown widgets (streaks, contribution graphs, stats
+  cards, snake, 3D calendar) to show your activity on your profile README
 - [`CLAUDE.md`](CLAUDE.md) – guidance for AI coding assistants working in this repo
 
 ## Development
