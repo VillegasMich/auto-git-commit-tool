@@ -1,0 +1,24 @@
+# Runs auto-git-commit-tool as a Docker container. Installed by scripts/install.sh, which
+# replaces @DOCKER@ with the path to the docker binary.
+[Unit]
+Description=auto-git-commit-tool (Docker)
+Documentation=https://github.com/VillegasMich/auto-git-commit-tool
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Environment=CONTAINER=auto-git-commit-tool
+Environment=IMAGE=auto-git-commit-tool:latest
+Environment=VOLUME=auto-git-commit-data
+# Remove a container left over from an unclean stop (e.g. power loss).
+ExecStartPre=-@DOCKER@ rm --force ${CONTAINER}
+ExecStart=@DOCKER@ run --rm --name ${CONTAINER} --env-file /etc/auto-git-commit-tool/env --volume ${VOLUME}:/data ${IMAGE}
+ExecStop=@DOCKER@ stop --time 30 ${CONTAINER}
+Restart=always
+RestartSec=60
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
