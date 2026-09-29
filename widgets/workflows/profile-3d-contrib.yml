@@ -1,0 +1,38 @@
+# 3D contribution calendar (https://github.com/yoshi389111/github-profile-3d-contrib)
+#
+# Copy to .github/workflows/profile-3d-contrib.yml in your profile repository (USERNAME/USERNAME).
+# Commits SVGs to profile-3d-contrib/ in that repo. The cron runs daily at 13:00 UTC; set it after
+# your COMMIT_TIME.
+#
+# Private repos: private contributions are counted if enabled on your profile. For private repo
+# details (languages, stars), create a classic PAT with `repo` + `read:user`, store it as the
+# secret MY_GITHUB_TOKEN and replace secrets.GITHUB_TOKEN below with secrets.MY_GITHUB_TOKEN.
+
+name: GitHub-Profile-3D-Contrib
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: generate-github-profile-3d-contrib
+    steps:
+      - uses: actions/checkout@v5
+      - uses: yoshi389111/github-profile-3d-contrib@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          USERNAME: ${{ github.repository_owner }}
+      - name: Commit & Push
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A .
+          if git commit -m "chore: update 3d contribution graph"; then
+            git push
+          fi
