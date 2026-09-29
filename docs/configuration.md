@@ -44,6 +44,9 @@ Line format:
 Directory where the repository is cloned (`$DATA_DIR/$REPO_NAME`). Mount a volume here so the clone
 survives container restarts. If the volume is lost, the repo is simply re-cloned from GitHub.
 
+The native systemd unit sets it to `/var/lib/auto-git-commit-tool`; don't set it in the env file
+for that mode.
+
 ### `GIT_AUTHOR_NAME` (default: GitHub login)
 
 Name used for `user.name` in the clone.
@@ -55,14 +58,24 @@ will not count on the contribution graph. The default noreply address always wor
 
 ### `RUN_ON_START` (default: `false`)
 
-When `true`, perform a run right after startup if no run has happened yet today (UTC).
-Useful for testing or when the service was down at the scheduled time.
+When `true`, perform a run right after startup if no run has happened yet today (UTC), even if
+today's `COMMIT_TIME` hasn't been reached yet. Useful for testing.
+
+### `CATCH_UP` (default: `true`)
+
+When `true` and the service starts **after** today's `COMMIT_TIME` without having committed today
+(the machine was off, rebooting or the service was stopped at that time), it runs immediately
+instead of waiting until tomorrow. Runs are idempotent, so this never doubles a day's commits.
+Set to `false` to only ever commit at `COMMIT_TIME`.
 
 ### `RUST_LOG` (default: `info`)
 
 Log filter for `tracing-subscriber` (`error`, `warn`, `info`, `debug`, `trace`).
 
 ## Example `.env`
+
+Start from [`.env.example`](../.env.example) (`cp .env.example .env`), which lists every setting
+with its default. Minimal version:
 
 ```dotenv
 GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
@@ -71,6 +84,7 @@ COMMIT_TIME=15:30
 MIN_COMMITS=1
 MAX_COMMITS=5
 RUN_ON_START=true
+CATCH_UP=true
 ```
 
 Never commit a real `.env` file — it is listed in `.gitignore`.

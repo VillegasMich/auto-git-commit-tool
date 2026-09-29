@@ -21,10 +21,12 @@ behavior; update it in the same change when behavior changes.
 
 ```bash
 cargo build                    # build
-cargo test                     # tests
+cargo test                     # unit + offline E2E tests
+E2E_GITHUB=1 cargo test --test e2e github   # E2E against real GitHub
 cargo clippy -- -D warnings    # lint (must pass)
 cargo fmt                      # format (must be clean)
 docker build -t auto-git-commit-tool .
+scripts/install.sh [docker|native]   # install as systemd service (uses sudo)
 ```
 
 ## Hard rules
@@ -41,7 +43,9 @@ docker build -t auto-git-commit-tool .
 - **Don't crash on transient failures** (network, push rejected). Log, retry with backoff, continue.
   Only config/preflight errors exit non-zero.
 - **Synchronous code.** No async runtime; `std::thread::sleep` in bounded chunks is sufficient.
-- Handle `SIGTERM` cleanly — the binary is PID 1 in the container.
+- Handle `SIGTERM` cleanly — in the container `tini` is PID 1 and forwards it to the binary.
+- Host-side hard dependencies (installer, `scripts/install.sh`): systemd + `gh`, plus Docker
+  (docker mode) or `git` (native mode).
 
 ## Conventions
 
@@ -49,8 +53,9 @@ docker build -t auto-git-commit-tool .
 - Logging: `tracing`, level via `RUST_LOG`, to stdout.
 - Config only from environment variables (see `docs/configuration.md`). Add new settings there and in
   the README table.
-- Keep external command invocations in thin wrappers (`github.rs`, `repo.rs`) so logic in `run.rs` and
-  `scheduler.rs` can be unit tested without a network (inject a trait / fake runner).
+- Keep external command invocations in thin wrappers (`github.rs`, `repo.rs`, via `exec.rs`) so logic
+  in `run.rs`, `scheduler.rs` and `bootstrap.rs` can be unit tested without a network (traits
+  `Workspace`, `GitHub`, `Clock` with fakes).
 - Pure logic worth testing: next-run computation, config validation, log-line formatting, "already ran
   today" detection.
 - Commit messages: Conventional Commits, validated against commitlint `@commitlint/config-conventional`
@@ -85,5 +90,10 @@ unless explicitly asked — only suggest.
 
 ## Testing notes
 
-- Do not hit real GitHub in unit tests.
-- For manual end-to-end testing, use a throwaway `REPO_NAME` and `RUN_ON_START=true`.
+- Do not hit real GitHub in unit tests. The only test that does is
+  `tests/e2e.rs::github_simulation_matches_expected_log`, gated behind `E2E_GITHUB=1` (see
+  `docs/testing.md`); CI runs it with the `E2E_GH_TOKEN` secret.
+- `cargo run -- simulate [--days N] [--start HH:MM]` exercises scheduler + daily run + git offline
+  (simulated clock, local sandbox repo); use it first. `--github` does the same against a real,
+  separate private repo (never `REPO_NAME`).
+- For manual end-to-end testing against GitHub, use a throwaway `REPO_NAME` and `RUN_ON_START=true`.
