@@ -27,6 +27,7 @@ cargo clippy -- -D warnings    # lint (must pass)
 cargo fmt                      # format (must be clean)
 docker build -t auto-git-commit-tool .
 scripts/install.sh [docker|native]   # install as systemd service (uses sudo)
+scripts/release.sh [--dry-run]       # tag + GitHub release of Cargo.toml version (from main)
 ```
 
 ## Hard rules

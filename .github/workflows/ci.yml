@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -28,14 +30,84 @@ jobs:
       - run: cargo test --locked
 
   docker:
-    name: Docker image + simulate smoke test
+    # PRs and pushes: build + smoke test + dry-run push (tags computed, nothing uploaded).
+    # Published releases: the same, then build for amd64/arm64 and push to Docker Hub.
+    name: Docker image (smoke test, push on release)
+    needs: test
     runs-on: ubuntu-latest
+    env:
+      PUBLISH: ${{ github.event_name == 'release' }}
+      # Docker Hub repository, e.g. "johndoe/auto-git-commit-tool". See docs/deployment.md.
+      IMAGE: ${{ vars.DOCKERHUB_IMAGE || format('{0}/auto-git-commit-tool', vars.DOCKERHUB_USERNAME || 'local') }}
     steps:
       - uses: actions/checkout@v4
-      - run: docker build --tag auto-git-commit-tool:ci .
-      - run: >
+      - uses: docker/setup-qemu-action@v3
+        if: env.PUBLISH == 'true'
+      - uses: docker/setup-buildx-action@v3
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # Releases: 1.2.3, 1.2 and latest (latest is skipped for pre-releases).
+          # Otherwise: pr-<n>, branch name and sha-<short>, which are never pushed.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=pr
+            type=ref,event=branch
+            type=sha
+      - name: Build image (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: auto-git-commit-tool:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: >
           docker run --rm -e MIN_COMMITS=2 -e MAX_COMMITS=2
           auto-git-commit-tool:ci simulate --days 2
+      - name: Dry-run push
+        if: env.PUBLISH != 'true'
+        run: |
+          {
+            echo "### Docker push (dry run)"
+            echo "Nothing was pushed. Tags this build would get (releases get version tags + latest):"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$TAGS"
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+      - name: Check Docker Hub settings
+        if: env.PUBLISH == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::Set the DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN secret (docs/deployment.md)"
+            exit 1
+          fi
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push (linux/amd64, linux/arm64)
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   e2e-github:
     name: E2E against GitHub
