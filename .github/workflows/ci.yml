@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: fmt, clippy, tests (incl. offline E2E)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Unit tests + tests/e2e.rs offline simulations. The GitHub E2E test skips itself here.
+      - run: cargo test --locked
+
+  docker:
+    name: Docker image + simulate smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag auto-git-commit-tool:ci .
+      - run: >
+          docker run --rm -e MIN_COMMITS=2 -e MAX_COMMITS=2
+          auto-git-commit-tool:ci simulate --days 2
+
+  e2e-github:
+    name: E2E against GitHub
+    needs: test
+    # Secrets are not available to pull requests from forks.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    concurrency: e2e-github
+    env:
+      # A PAT for the account that owns the E2E repository; the default GITHUB_TOKEN cannot
+      # create repositories. See docs/testing.md.
+      GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
+      E2E_GITHUB: "1"
+      E2E_REPO: ${{ vars.E2E_REPO || 'auto-git-commit-e2e' }}
+    steps:
+      - name: Skip without E2E_GH_TOKEN secret
+        if: env.GH_TOKEN == ''
+        run: echo "::notice::E2E_GH_TOKEN secret not set; skipping GitHub E2E test"
+      - uses: actions/checkout@v4
+        if: env.GH_TOKEN != ''
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.GH_TOKEN != ''
+      - uses: Swatinem/rust-cache@v2
+        if: env.GH_TOKEN != ''
+      - name: cargo test --test e2e github
+        if: env.GH_TOKEN != ''
+        run: cargo test --locked --test e2e github -- --nocapture
