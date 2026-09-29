@@ -79,6 +79,40 @@ Multi-arch (e.g. for Raspberry Pi):
 docker buildx build --platform linux/amd64,linux/arm64 -t <you>/auto-git-commit-tool --push .
 ```
 
+## Publishing to Docker Hub
+
+CI (`docker` job in [`ci.yml`](../.github/workflows/ci.yml)) pushes the image when a GitHub
+release is **published**. The release tag must be semver (`v1.2.3` or `1.2.3`); it becomes the
+tags `1.2.3`, `1.2` and `latest` (no `latest` for pre-releases like `v1.3.0-rc.1`), for
+`linux/amd64` and `linux/arm64`. Every other run only builds and does a dry-run push.
+
+One-time setup:
+
+1. Docker Hub → *Account settings* → *Personal access tokens* → *Generate new token*, access
+   **Read & Write**. Copy it (it's shown once).
+2. GitHub repo → *Settings* → *Secrets and variables* → *Actions*:
+   - *Secrets* tab → `DOCKERHUB_TOKEN` = the token.
+   - *Variables* tab → `DOCKERHUB_USERNAME` = your Docker Hub username.
+   - Optional variable `DOCKERHUB_IMAGE` (e.g. `myorg/auto-git-commit-tool`); defaults to
+     `<DOCKERHUB_USERNAME>/auto-git-commit-tool`. The Docker Hub repository is created on first
+     push (public on free plans) if it doesn't exist.
+
+Or with `gh`:
+
+```bash
+gh secret set DOCKERHUB_TOKEN          # paste the token when prompted
+gh variable set DOCKERHUB_USERNAME --body <you>
+```
+
+Release from an up-to-date, clean `main` with [`scripts/release.sh`](../scripts/release.sh)
+(`--dry-run` to only check, `-y` to skip the prompt). It tags the current commit as
+`v<version>` from `Cargo.toml` and runs `gh release create --generate-notes` (versions like
+`1.3.0-rc.1` become pre-releases). It refuses a version that was already released, or a
+`Cargo.lock` that doesn't match: bump `version` in `Cargo.toml`, run `cargo build`, commit both,
+push, then rerun. The job fails with an error if the secret
+or variable is missing. Secrets are not exposed to pull requests from forks, and only the release
+path logs in.
+
 ## GitHub token
 
 Create a token at <https://github.com/settings/tokens>.
