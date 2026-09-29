@@ -1,0 +1,36 @@
+# Runs a locally built auto-git-commit-tool binary. Installed by scripts/install.sh, which
+# replaces @BIN@ with the installed binary path.
+[Unit]
+Description=auto-git-commit-tool (native binary)
+Documentation=https://github.com/VillegasMich/auto-git-commit-tool
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@BIN@ daemon
+EnvironmentFile=/etc/auto-git-commit-tool/env
+# The clone and gh/git config live in the state directory, isolated from any real user's
+# ~/.gitconfig. Don't set DATA_DIR in the env file: it would override this.
+Environment=DATA_DIR=/var/lib/auto-git-commit-tool
+Environment=HOME=/var/lib/auto-git-commit-tool
+DynamicUser=yes
+StateDirectory=auto-git-commit-tool
+Restart=always
+RestartSec=60
+TimeoutStopSec=45
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
