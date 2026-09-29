@@ -2,5 +2,23 @@
 name = "auto-git-commit-tool"
 version = "0.1.0"
 edition = "2024"
+description = "Service that makes a few commits per day to a private GitHub repo to keep the contribution graph active"
+publish = false
 
 [dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6.7", features = ["derive"] }
+rand = "0.10.3"
+signal-hook = { version = "0.4.4", default-features = false }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
