@@ -49,7 +49,7 @@ To change settings later: `sudoedit /etc/auto-git-commit-tool/env && sudo system
 
 - **docker** – `Requires=docker.service`, removes a stale container left by an unclean stop,
   runs the container in the foreground with `--env-file` and the `auto-git-commit-data` volume,
-  `Restart=always`. `systemctl stop` → `docker stop --time 30` → `SIGTERM` to the service.
+  and `--hostname %H` (the host's name, shown in notification emails), `Restart=always`. `systemctl stop` → `docker stop --time 30` → `SIGTERM` to the service.
 - **native** – `DynamicUser=yes` with `StateDirectory=auto-git-commit-tool`: the clone and the
   git/gh config live in `/var/lib/auto-git-commit-tool` (`HOME` points there, so your own
   `~/.gitconfig` is never touched), sandboxed with `ProtectSystem=strict`/`ProtectHome=yes`.
@@ -138,10 +138,14 @@ preflight on the next restart and pushes will start failing (visible in the logs
 docker run -d \
   --name auto-git-commit \
   --restart unless-stopped \
+  --hostname "$(hostname)" \
   --env-file .env \
   -v auto-git-commit-data:/data \
   auto-git-commit-tool
 ```
+
+`--hostname` is optional; it makes notification emails name the machine instead of the
+container ID.
 
 `--restart unless-stopped` makes it survive host reboots, turning it into a de-facto system service.
 The systemd install above is the recommended way; plain `docker run` is fine when you'd rather
@@ -152,6 +156,18 @@ Check it:
 ```bash
 docker logs -f auto-git-commit
 ```
+
+## Notifications
+
+Optional emails after each daily run and on clean stops, plus a dead-man's switch
+(healthchecks.io) that alerts you when the machine is off: see the
+[notifications tutorial](tutorials/notifications.md). Verify the settings with
+`notify-test` (systemd + Docker:
+`docker run --rm --env-file /etc/auto-git-commit-tool/env auto-git-commit-tool notify-test`, as
+root).
+
+Both units stop the service before the network goes down on shutdown (`After=network-online.target`),
+so the "service stopped" email still goes out on a reboot.
 
 ## Making commits visible on your profile
 

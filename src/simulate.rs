@@ -4,6 +4,10 @@
 //! that starts just before `COMMIT_TIME` and skips ahead instantly instead of sleeping.
 //! Afterwards a service restart is simulated to show that a day is never committed twice.
 //!
+//! With `--notify`, the configured notifications are sent for real: one healthcheck ping at the
+//! start, an email per simulated run and the "service stopped" email when the simulated time runs
+//! out. A notification that can't be delivered fails the simulation.
+//!
 //! The remote is either a throwaway local bare repository ([`Remote::Local`], GitHub is never
 //! contacted) or a real private GitHub repository ([`Remote::GitHub`]: real preflight, repo
 //! creation, clone and pushes). The GitHub repository must differ from `REPO_NAME`, so simulated
@@ -25,6 +29,8 @@ use crate::clock::{Clock, SimulatedClock, SystemClock};
 use crate::config::{Config, validate_repo_name};
 use crate::exec::Cmd;
 use crate::github::GhCli;
+use crate::heartbeat::HttpPinger;
+use crate::notify::{self, Installation, Mailer, Notifier, SmtpMailer};
 use crate::preflight;
 use crate::repo::GitRepo;
 use crate::retry::{Backoff, RetryError, retry};
@@ -59,6 +65,8 @@ pub struct Options {
     /// Keep the default sandbox directory for inspection (a given `sandbox` is always kept).
     pub keep: bool,
     pub remote: Remote,
+    /// Send the configured notifications (email, healthcheck ping) for real.
+    pub notify: bool,
 }
 
 /// Parses `--start`: RFC 3339 (`2026-09-28T16:59:00Z`) or `HH:MM` (today, UTC).
@@ -94,6 +102,7 @@ pub fn simulate(config: Config, options: Options, shutdown: Arc<AtomicBool>) -> 
         start,
         options.days,
         &root,
+        options.notify,
         shutdown,
     );
 
@@ -125,8 +134,13 @@ pub fn run_simulation(
     start: DateTime<Utc>,
     days: u32,
     root: &Path,
+    notify: bool,
     shutdown: Arc<AtomicBool>,
 ) -> Result<Vec<String>> {
+    // Checked before touching the sandbox or GitHub.
+    if notify && config.email.is_none() && config.healthcheck.is_none() {
+        bail!("--notify: no notifications configured; set SMTP_HOST and/or HEALTHCHECK_URL");
+    }
     if root.exists() && fs::read_dir(root)?.next().is_some() {
         bail!("sandbox {} already exists and is not empty", root.display());
     }
@@ -157,6 +171,15 @@ pub fn run_simulation(
         },
         "simulation started with a simulated UTC clock"
     );
+    let notifier = if notify {
+        let repo_name = match &github {
+            Some((_, target)) => target.full_name(),
+            None => format!("local/{}", config.repo_name),
+        };
+        Some(notifier(config, repo_name, start)?)
+    } else {
+        None
+    };
     let clock = SimulatedClock::new(start, end, Arc::clone(&shutdown));
     let schedule = Schedule {
         at,
@@ -173,12 +196,22 @@ pub fn run_simulation(
                 );
             }
         }
-        job_status(daily_run(&mut repo, &settings, clock, &mut rand::rng()))
+        let date = clock.now().date_naive();
+        let result = daily_run(&mut repo, &settings, clock, &mut rand::rng());
+        if let Some(notifier) = &notifier {
+            notifier.run_finished(clock, date, &result);
+        }
+        job_status(result)
     };
     run_forever(&clock, &schedule, || {
         info!(now = %ts(clock.now()), "scheduled time reached");
         job(&clock)
     });
+
+    if let Some(notifier) = &notifier {
+        // The simulated time ran out: report it like a clean stop of the daemon.
+        notifier.stopped(&clock, next_run(clock.now(), at));
+    }
 
     if !clock.shutdown_requested() {
         let restart_at = clock.now();
@@ -191,8 +224,30 @@ pub fn run_simulation(
         }
     }
 
+    if let Some(failures) = notifier.as_ref().map(Notifier::failures).filter(|&n| n > 0) {
+        bail!("{failures} notification email(s) could not be sent");
+    }
     let content = fs::read_to_string(repo.log_path()).unwrap_or_default();
     Ok(content.lines().map(str::to_owned).collect())
+}
+
+/// Pings the healthcheck once (failing the simulation if that fails) and builds the email
+/// notifier.
+fn notifier(config: &Config, repo: String, start: DateTime<Utc>) -> Result<Notifier> {
+    if let Some(healthcheck) = &config.healthcheck {
+        HttpPinger::new(healthcheck).ping()?;
+        info!("healthcheck pinged");
+    }
+    let mailer = match &config.email {
+        Some(email) => Some(Box::new(SmtpMailer::new(email)?) as Box<dyn Mailer>),
+        None => None,
+    };
+    let installation = Installation {
+        host: notify::host_name(),
+        repo,
+        heartbeat: config.healthcheck.is_some(),
+    };
+    Ok(Notifier::new(mailer, installation, start))
 }
 
 fn setup_local(config: &Config, root: &Path) -> Result<Setup> {
@@ -352,6 +407,7 @@ mod tests {
             t("2026-09-28T16:59:00Z"),
             2,
             tmp.path(),
+            false,
             shutdown,
         )
         .unwrap();
@@ -379,6 +435,7 @@ mod tests {
             t("2026-09-28T18:30:00Z"),
             1,
             tmp.path(),
+            false,
             shutdown,
         )
         .unwrap();
@@ -394,7 +451,8 @@ mod tests {
             repo: "daily-log".into(),
         };
         let shutdown = Arc::new(AtomicBool::new(false));
-        let err = run_simulation(&cfg, &remote, Utc::now(), 1, tmp.path(), shutdown).unwrap_err();
+        let err =
+            run_simulation(&cfg, &remote, Utc::now(), 1, tmp.path(), false, shutdown).unwrap_err();
         assert!(
             err.to_string().contains("must differ from REPO_NAME"),
             "{err:#}"

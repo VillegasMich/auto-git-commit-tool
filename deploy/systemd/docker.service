@@ -14,7 +14,7 @@ Environment=IMAGE=auto-git-commit-tool:latest
 Environment=VOLUME=auto-git-commit-data
 # Remove a container left over from an unclean stop (e.g. power loss).
 ExecStartPre=-@DOCKER@ rm --force ${CONTAINER}
-ExecStart=@DOCKER@ run --rm --name ${CONTAINER} --env-file /etc/auto-git-commit-tool/env --volume ${VOLUME}:/data ${IMAGE}
+ExecStart=@DOCKER@ run --rm --name ${CONTAINER} --hostname %H --env-file /etc/auto-git-commit-tool/env --volume ${VOLUME}:/data ${IMAGE}
 ExecStop=@DOCKER@ stop --time 30 ${CONTAINER}
 Restart=always
 RestartSec=60

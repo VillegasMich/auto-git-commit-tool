@@ -72,6 +72,56 @@ Set to `false` to only ever commit at `COMMIT_TIME`.
 
 Log filter for `tracing-subscriber` (`error`, `warn`, `info`, `debug`, `trace`).
 
+## Notifications (optional)
+
+Setup guide: [tutorials/notifications.md](tutorials/notifications.md). Verify with the
+`notify-test` command; `check` logs in to the SMTP server without sending.
+
+### `NOTIFY_ENABLED` (default: `true`)
+
+Master switch. `false` turns off emails and healthcheck pings while keeping the other settings;
+none of them are validated then.
+
+### `SMTP_HOST` (default: unset)
+
+SMTP server for notification emails, e.g. `smtp.gmail.com`. Unset: no emails. Setting any other
+email variable (`SMTP_*`, `NOTIFY_EMAIL_*`) without it is an error.
+
+### `SMTP_PORT` (default: `465`)
+
+SMTP port. With the default `SMTP_TLS`, `465` connects with implicit TLS and any other port
+(e.g. `587`) requires STARTTLS.
+
+### `SMTP_TLS` (default: by port)
+
+`implicit`, `starttls` or `none`. `none` (no encryption) is only accepted when `SMTP_HOST` is
+this machine (`localhost`, `127.0.0.1`, `::1`); the E2E tests use it for their fake SMTP server.
+
+### `SMTP_USERNAME` / `SMTP_PASSWORD` (default: unset)
+
+SMTP login; set both or neither. For Gmail: your address and an
+[app password](https://myaccount.google.com/apppasswords). The password is never logged.
+
+### `NOTIFY_EMAIL_FROM` (default: `SMTP_USERNAME`)
+
+Sender, `addr@example.com` or `Name <addr@example.com>`. Without a name, the display name is
+`auto-git-commit-tool`. Required if `SMTP_USERNAME` is not an email address.
+
+### `NOTIFY_EMAIL_TO` (default: the sender address)
+
+Recipient.
+
+### `HEALTHCHECK_URL` (default: unset)
+
+Ping URL of a dead-man's switch such as [healthchecks.io](https://healthchecks.io)
+(`https://hc-ping.com/<uuid>`) or a self-hosted equivalent. The service sends an HTTP `GET` every
+`HEALTHCHECK_INTERVAL_MINUTES` once it has started; the monitor alerts you when the pings stop.
+Treat it as a secret: it is never logged.
+
+### `HEALTHCHECK_INTERVAL_MINUTES` (default: `5`)
+
+Minutes between pings, `1`–`1440`. Configure the check's period to the same value.
+
 ## Example `.env`
 
 Start from [`.env.example`](../.env.example) (`cp .env.example .env`), which lists every setting

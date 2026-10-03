@@ -29,6 +29,8 @@ src/
 ├── repo.rs        # git wrappers (`GitRepo`, implements `Workspace`): recover, pull, append, commit, push
 ├── run.rs         # one daily run (trait `Workspace`): idempotency check, N commits, push
 ├── scheduler.rs   # next-run computation, catch-up decision, bounded sleep loop
+├── notify.rs      # notification emails (trait `Mailer`, SMTP via lettre) and "not noisy" rules
+├── heartbeat.rs   # healthcheck pings (HTTP via ureq) in a background thread
 ├── simulate.rs    # `simulate` test mode: simulated clock + local sandbox repo
 ├── retry.rs       # exponential backoff
 ├── clock.rs       # `Clock` trait: `SystemClock` (sleep interruptible by SIGTERM), `SimulatedClock`
@@ -47,8 +49,9 @@ Configuration always comes from environment variables; the CLI only selects what
 | `daemon` (default, no args)   | Long-running service: startup flow below, then one run per day.         |
 | `once`                        | Startup flow, one (idempotent) run now, exit. Non-zero if push failed.  |
 | `status`                      | Read-only report: account, repo, last log line, done today?, next run.  |
-| `check`                       | Validate config, tools and authentication, then exit.                   |
-| `simulate [--days N] [--start T] [--keep] [--sandbox DIR] [--github [--repo NAME]]` | Test mode, see below. |
+| `check`                       | Validate config, tools, authentication and SMTP login, then exit.       |
+| `notify-test`                 | Send a test email and one healthcheck ping (no GitHub needed).          |
+| `simulate [--days N] [--start T] [--keep] [--sandbox DIR] [--github [--repo NAME]] [--notify]` | Test mode, see below. |
 
 ### `simulate` (test mode)
 
@@ -65,6 +68,10 @@ Runs the real scheduler (`run_forever`), the real daily run and real `git`, with
   repository `--repo` (default `auto-git-commit-simulation`) if missing, clone it into the
   sandbox, and before each run re-check it like the daemon does; pushes go to GitHub. `--repo`
   must differ from `REPO_NAME`, otherwise simulated dates would mark real days as done.
+
+`--notify` sends the configured notifications for real: one healthcheck ping, an email per run,
+and the "service stopped" email when the simulated time runs out; any undelivered one fails the
+simulation.
 
 Afterwards a service restart is simulated at the final simulated time, which must report
 "already committed today". The resulting log file is printed and the sandbox removed (`--keep`
@@ -93,9 +100,12 @@ See [testing.md](testing.md) for how the E2E tests use it.
    - If the repo had to be created but a clone already exists, the clone belongs to a deleted
      repository: it is renamed to `<REPO_NAME>.orphaned-<timestamp>` and a fresh clone is made.
    - Transient failures are retried with the same startup backoff.
-5. **Immediate run** (idempotent) if `RUN_ON_START=true`, or if `CATCH_UP=true` (default) and
+5. **Notifications**: build the SMTP mailer if `SMTP_HOST` is set; start the healthcheck thread
+   if `HEALTHCHECK_URL` is set (daemon only). Neither connects at this point, and neither can
+   fail startup once the config is valid.
+6. **Immediate run** (idempotent) if `RUN_ON_START=true`, or if `CATCH_UP=true` (default) and
    today's `COMMIT_TIME` has already passed — e.g. the machine was off or rebooting at that time.
-6. **Enter scheduler loop.**
+7. **Enter scheduler loop.**
 
 ## Scheduler
 
@@ -170,6 +180,50 @@ The service is meant to be started on boot and killed at any time (power loss, `
 | Repo deleted on GitHub mid-life | Detected on next run → recreate (private), move old clone aside, re-clone.|
 | External command hangs          | Every `git`/`gh` call has a timeout (5 min, clone 15 min); stalled HTTP transfers abort after 60 s below 1 KiB/s. |
 
+## Notifications
+
+Optional; see [configuration.md](configuration.md#notifications-optional). The goal is "know and be
+able to search", not alerts: at most one email per day when things work.
+
+**Email** (`notify.rs`), after every run of `daemon` and `once`:
+
+| Run result                                   | Email (subject after `[auto-git-commit] <date>: `) |
+| -------------------------------------------- | -------------------------------------------------- |
+| Commits made and pushed                      | `N commits pushed` — SHAs, log lines, commit links  |
+| Commits made, push failed                    | `N commits made, push failed`                       |
+| Commits made, push cut short by shutdown     | `N of M commits made, push interrupted`             |
+| Already done today, pending commits pushed   | `pending commits pushed`                            |
+| Already done today, push failed              | `push failed`                                       |
+| Run returned an error                        | `daily run failed`                                  |
+| Already done today, nothing to push          | none                                                |
+
+Failure emails (push failed, run failed) are sent **once per UTC day** — the 30-minute retries
+stay quiet — and recovery is reported again. The "already reported" state is in memory, so a
+restart may repeat it once.
+
+On a clean shutdown (`SIGTERM`/`SIGINT` after a successful start) the daemon sends
+`service stopped on <host>`: stop time, uptime, last run's subject and next scheduled run. On
+the host, both systemd units are ordered after `network-online.target`, so they stop (and send
+it) before the network goes down on reboot. The host name comes from
+`/proc/sys/kernel/hostname`; the docker unit passes `--hostname %H`.
+
+The connection is encrypted per `SMTP_TLS` (default: implicit TLS on port 465, STARTTLS
+otherwise); unencrypted SMTP is only accepted for a server on localhost (used by the E2E tests).
+
+Sending is synchronous (20 s SMTP timeout), retried up to 3 times (10 s, 20 s); a permanent
+SMTP error (bad login, rejected address) is not retried; failures are logged and never affect
+the run. During shutdown the retries are skipped (one attempt).
+
+**Healthcheck** (`heartbeat.rs`): a background thread `GET`s `HEALTHCHECK_URL` right away and
+then every `HEALTHCHECK_INTERVAL_MINUTES` (10 s timeout) until shutdown. It starts after a
+successful startup, so the external monitor (e.g. healthchecks.io) reports the service as down
+when the machine is off, was killed, or keeps failing at startup. A clean stop just stops the
+pings: a reboot shorter than the monitor's grace time produces no alert. Ping failures are
+logged when they start and when they recover, not on every attempt.
+
+Secrets (`SMTP_PASSWORD`, `HEALTHCHECK_URL`) are wrapped in a `Secret` type whose `Debug` output
+is redacted, and are never echoed in config errors.
+
 ## Logging
 
 Structured logs to stdout (`tracing` + `tracing-subscriber`), level via `RUST_LOG`.
@@ -183,5 +237,9 @@ Every run logs: scheduled time, chosen `n`, each commit SHA, and push result.
 - `tracing`, `tracing-subscriber` – logging
 - `signal-hook` – SIGTERM/SIGINT handling
 - `clap` – command-line subcommands
+- `lettre` (SMTP + rustls, no default features) – notification emails
+- `ureq` (rustls) – healthcheck pings
 
 Keep dependencies minimal; the service is intentionally synchronous (no async runtime needed).
+`lettre` and `ureq` share one `rustls`/`ring` stack with bundled Mozilla roots, so the image
+needs no extra packages.

@@ -93,14 +93,16 @@ volumes:
 auto-git-commit-tool [daemon]   # run forever, once per day at COMMIT_TIME (default)
 auto-git-commit-tool once       # today's run now (no-op if already done today), then exit
 auto-git-commit-tool status     # account, repo, last entry, done today?, next run
-auto-git-commit-tool check      # validate config, git/gh and authentication
+auto-git-commit-tool check      # validate config, git/gh, authentication and SMTP login
+auto-git-commit-tool notify-test # send a test email and one healthcheck ping
 auto-git-commit-tool simulate   # test: simulated clock reaches COMMIT_TIME now, local sandbox repo
 ```
 
 `simulate` runs the real scheduler and commit logic against a throwaway local repository, with a
 clock that jumps straight to `COMMIT_TIME` — nothing is pushed to GitHub and no token is needed.
 Options: `--days N` (simulate N daily runs), `--start HH:MM|RFC3339` (e.g. after `COMMIT_TIME`
-to test the catch-up after a missed run), `--keep` (keep the sandbox to inspect it). In Docker:
+to test the catch-up after a missed run), `--keep` (keep the sandbox to inspect it), `--notify`
+(also send the configured notifications for real). In Docker:
 `docker run --rm --env-file .env auto-git-commit-tool simulate --days 3`.
 
 `simulate --github` does the same against real GitHub: authenticates, creates the private
@@ -125,8 +127,29 @@ All configuration is done through environment variables.
 | `RUN_ON_START`     | `false`                       | If `true`, perform a run immediately on startup (if none today).   |
 | `CATCH_UP`         | `true`                        | If started after today's `COMMIT_TIME` with no run today, run now. |
 | `RUST_LOG`         | `info`                        | Log level.                                                         |
+| `NOTIFY_ENABLED`   | `true`                        | Master switch: `false` turns off emails and healthcheck pings.     |
+| `SMTP_HOST`        | unset (no email)              | SMTP server for notification emails, e.g. `smtp.gmail.com`.        |
+| `SMTP_PORT`        | `465`                         | `465` = implicit TLS, anything else = STARTTLS (e.g. `587`).       |
+| `SMTP_TLS`         | by port                       | `implicit`, `starttls`, or `none` (localhost only, for tests).     |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | unset          | SMTP login (Gmail: your address + an app password).               |
+| `NOTIFY_EMAIL_FROM`| `SMTP_USERNAME`               | Sender address.                                                    |
+| `NOTIFY_EMAIL_TO`  | sender address                | Recipient address.                                                 |
+| `HEALTHCHECK_URL`  | unset (no pings)              | Dead-man's-switch ping URL, e.g. `https://hc-ping.com/<uuid>`.     |
+| `HEALTHCHECK_INTERVAL_MINUTES` | `5`               | Minutes between pings.                                             |
 
 Full details: [`docs/configuration.md`](docs/configuration.md).
+
+## Notifications (optional)
+
+- **Email** (`SMTP_*`): one email per day when the commits are pushed, with the SHAs and log
+  lines; a failing day is reported once, plus once more when it recovers; and one when the
+  service is stopped (`systemctl stop`, `docker stop`, reboot, shutdown). Subjects start with
+  `[auto-git-commit] <date>:` so a mail filter can label them and skip the inbox.
+- **Machine off / killed** (`HEALTHCHECK_URL`): a process that loses power can't report it, so the
+  service pings an external dead-man's switch such as [healthchecks.io](https://healthchecks.io)
+  every few minutes; it alerts you when the pings stop.
+
+Setup guide: [Set up notifications](docs/tutorials/notifications.md).
 
 ## Requirements for commits to show up on your profile
 

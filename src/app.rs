@@ -10,6 +10,8 @@ use crate::bootstrap::{Target, ensure_clone, ensure_remote};
 use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::github::{GhCli, GitHub, User};
+use crate::heartbeat::{self, HttpPinger};
+use crate::notify::{self, Installation, Mailer, Notifier, SmtpMailer};
 use crate::preflight;
 use crate::repo::GitRepo;
 use crate::retry::{Backoff, RetryError, retry};
@@ -33,6 +35,7 @@ struct Service {
     user: User,
     target: Target,
     settings: RunSettings,
+    notifier: Notifier,
 }
 
 impl Service {
@@ -44,12 +47,15 @@ impl Service {
         gh.setup_git()
             .context("configuring git credentials with `gh auth setup-git`")?;
 
+        let target = Target {
+            owner: user.login.clone(),
+            name: config.repo_name.clone(),
+            clone_dir: config.clone_dir(),
+        };
+        let notifier = notifier(&config, &target, &clock)?;
         let service = Self {
-            target: Target {
-                owner: user.login.clone(),
-                name: config.repo_name.clone(),
-                clone_dir: config.clone_dir(),
-            },
+            target,
+            notifier,
             settings: RunSettings::new(config.min_commits, config.max_commits),
             config,
             gh,
@@ -104,9 +110,33 @@ impl Service {
         daily_run(&mut repo, &self.settings, &self.clock, &mut rand::rng())
     }
 
-    fn job(&self) -> JobStatus {
-        job_status(self.run_once())
+    /// One run, followed by its notification.
+    fn run_and_notify(&self) -> Result<RunOutcome> {
+        let date = self.clock.now().date_naive();
+        let result = self.run_once();
+        self.notifier.run_finished(&self.clock, date, &result);
+        result
     }
+
+    fn job(&self) -> JobStatus {
+        job_status(self.run_and_notify())
+    }
+}
+
+fn notifier(config: &Config, target: &Target, clock: &SystemClock) -> Result<Notifier> {
+    let mailer = match &config.email {
+        Some(email) => {
+            info!(smtp_host = %email.smtp_host, "email notifications enabled");
+            Some(Box::new(SmtpMailer::new(email)?) as Box<dyn Mailer>)
+        }
+        None => None,
+    };
+    let installation = Installation {
+        host: notify::host_name(),
+        repo: target.full_name(),
+        heartbeat: config.healthcheck.is_some(),
+    };
+    Ok(Notifier::new(mailer, installation, clock.now()))
 }
 
 /// Logs a run's result and tells the scheduler whether to retry soon.
@@ -147,14 +177,20 @@ pub fn daemon(config: Config, clock: SystemClock) -> Result<()> {
         ),
         retry_after: RETRY_AFTER,
     };
+    if let Some(healthcheck) = &service.config.healthcheck {
+        heartbeat::spawn(healthcheck, service.clock.clone())?;
+    }
     run_forever(&service.clock, &schedule, || service.job());
+    // `run_forever` only returns on SIGTERM/SIGINT.
+    let next = next_run(service.clock.now(), service.config.commit_time);
+    service.notifier.stopped(&service.clock, next);
     Ok(())
 }
 
 /// Single run now (idempotent), then exit.
 pub fn once(config: Config, clock: SystemClock) -> Result<()> {
     let service = Service::start(config, clock)?;
-    let outcome = service.run_once()?;
+    let outcome = service.run_and_notify()?;
     info!(?outcome, "run finished");
     if outcome.needs_retry() {
         bail!("commits were made but could not be pushed; they will be pushed by the next run");
@@ -221,6 +257,73 @@ pub fn check(config: Config, clock: SystemClock) -> Result<()> {
     };
     let user = preflight::authenticate(&gh, &clock, &single_attempt)?;
     println!("ok: git and gh found, authenticated as {}", user.login);
+    match &config.email {
+        Some(email) => {
+            SmtpMailer::new(email)?.test_connection().with_context(|| {
+                format!(
+                    "connecting to SMTP server {}:{}",
+                    email.smtp_host, email.smtp_port
+                )
+            })?;
+            println!(
+                "ok: logged in to SMTP server {}:{}; notifications go to {}",
+                email.smtp_host, email.smtp_port, email.to
+            );
+        }
+        None => println!("email notifications: disabled"),
+    }
+    match &config.healthcheck {
+        Some(h) => println!(
+            "healthcheck: ping every {} min (not pinged by check; use notify-test)",
+            h.interval.as_secs() / 60
+        ),
+        None => println!("healthcheck: disabled"),
+    }
     println!("config: {config:#?}");
+    Ok(())
+}
+
+/// Sends a test email and one healthcheck ping. Doesn't need GitHub.
+pub fn notify_test(config: Config, clock: SystemClock) -> Result<()> {
+    if config.email.is_none() && config.healthcheck.is_none() {
+        bail!(
+            "no notifications configured: set SMTP_HOST and/or HEALTHCHECK_URL (and NOTIFY_ENABLED is not false)"
+        );
+    }
+    let mut failed = false;
+    if let Some(email) = &config.email {
+        let now = clock.now();
+        let message = notify::Message {
+            subject: format!(
+                "{} {}: test notification",
+                notify::SUBJECT_PREFIX,
+                now.date_naive()
+            ),
+            body: format!(
+                "Notifications from auto-git-commit-tool on {} work.\n\nSent at {}.\n",
+                notify::host_name(),
+                now.to_rfc3339_opts(SecondsFormat::Secs, true)
+            ),
+        };
+        match SmtpMailer::new(email)?.send(&message) {
+            Ok(()) => println!("ok: test email sent to {}", email.to),
+            Err(e) => {
+                println!("error: sending test email: {e:#}");
+                failed = true;
+            }
+        }
+    }
+    if let Some(healthcheck) = &config.healthcheck {
+        match HttpPinger::new(healthcheck).ping() {
+            Ok(()) => println!("ok: healthcheck pinged"),
+            Err(e) => {
+                println!("error: {e:#}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        bail!("some notifications could not be sent");
+    }
     Ok(())
 }
