@@ -8,6 +8,8 @@ mod clock;
 mod config;
 mod exec;
 mod github;
+mod heartbeat;
+mod notify;
 mod preflight;
 mod repo;
 mod retry;
@@ -52,6 +54,8 @@ enum Command {
     Status,
     /// Validate configuration, required tools and GitHub authentication.
     Check,
+    /// Send a test email and one healthcheck ping, to verify the notification settings.
+    NotifyTest,
     /// Test run with a simulated clock that reaches COMMIT_TIME right away.
     ///
     /// Uses the real scheduler, daily run and git. By default the remote is a throwaway local
@@ -83,6 +87,10 @@ struct SimulateArgs {
     /// Repository used with --github. Must differ from REPO_NAME.
     #[arg(long, value_name = "NAME", default_value = simulate::DEFAULT_GITHUB_REPO, requires = "github")]
     repo: String,
+    /// Send the configured notifications for real: one healthcheck ping, an email per simulated
+    /// run and the "service stopped" email at the end. Fails if one can't be delivered.
+    #[arg(long)]
+    notify: bool,
 }
 
 fn main() -> ExitCode {
@@ -116,6 +124,7 @@ fn run(command: Command, shutdown: Arc<AtomicBool>) -> Result<()> {
             start: args.start,
             sandbox: args.sandbox,
             keep: args.keep,
+            notify: args.notify,
             remote: if args.github {
                 simulate::Remote::GitHub { repo: args.repo }
             } else {
@@ -125,6 +134,13 @@ fn run(command: Command, shutdown: Arc<AtomicBool>) -> Result<()> {
         return simulate::simulate(Config::from_env_without_token()?, options, shutdown);
     }
 
+    if let Command::NotifyTest = command {
+        return app::notify_test(
+            Config::from_env_without_token()?,
+            SystemClock::new(shutdown),
+        );
+    }
+
     let config = Config::from_env()?;
     let clock = SystemClock::new(shutdown);
     match command {
@@ -132,7 +148,7 @@ fn run(command: Command, shutdown: Arc<AtomicBool>) -> Result<()> {
         Command::Once => app::once(config, clock),
         Command::Status => app::status(config, clock),
         Command::Check => app::check(config, clock),
-        Command::Simulate(_) => unreachable!("handled above"),
+        Command::NotifyTest | Command::Simulate(_) => unreachable!("handled above"),
     }
 }
 
@@ -152,7 +168,7 @@ fn init_logging(command: &Command) {
     // Interactive commands print a report; keep them quiet unless RUST_LOG says otherwise.
     let default_level = match command {
         Command::Daemon | Command::Once | Command::Simulate(_) => "info",
-        Command::Status | Command::Check => "warn",
+        Command::Status | Command::Check | Command::NotifyTest => "warn",
     };
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));

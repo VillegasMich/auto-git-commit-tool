@@ -1,8 +1,11 @@
 //! Configuration loaded from environment variables. See `docs/configuration.md`.
 
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use chrono::NaiveTime;
+use lettre::message::Mailbox;
 
 pub const DEFAULT_REPO_NAME: &str = "daily-log";
 pub const DEFAULT_COMMIT_TIME: &str = "12:00";
@@ -10,6 +13,11 @@ pub const DEFAULT_MIN_COMMITS: u32 = 1;
 pub const DEFAULT_MAX_COMMITS: u32 = 5;
 pub const DEFAULT_LOG_FILE: &str = "activity.log";
 pub const DEFAULT_DATA_DIR: &str = "/data";
+pub const DEFAULT_SMTP_PORT: u16 = 465;
+pub const DEFAULT_HEALTHCHECK_INTERVAL_MINUTES: u64 = 5;
+
+/// Display name on notification emails whose sender address has none.
+const EMAIL_SENDER_NAME: &str = "auto-git-commit-tool";
 
 /// Upper bound on commits per day, to keep a typo from spamming the repository.
 const MAX_COMMITS_LIMIT: u32 = 50;
@@ -30,6 +38,64 @@ pub struct Config {
     pub author_email: Option<String>,
     pub run_on_start: bool,
     pub catch_up: bool,
+    /// Email notifications; `None` when `SMTP_HOST` is unset or `NOTIFY_ENABLED=false`.
+    pub email: Option<EmailConfig>,
+    /// Dead-man's switch pings; `None` when `HEALTHCHECK_URL` is unset or `NOTIFY_ENABLED=false`.
+    pub healthcheck: Option<HealthcheckConfig>,
+}
+
+/// A value that must never be logged: `Debug` prints a placeholder instead.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailConfig {
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub tls: SmtpTls,
+    pub credentials: Option<SmtpCredentials>,
+    pub from: Mailbox,
+    pub to: Mailbox,
+}
+
+/// How the SMTP connection is encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTls {
+    /// TLS from the first byte (port 465).
+    Implicit,
+    /// Plain connection upgraded with STARTTLS, which the server must support (port 587).
+    StartTls,
+    /// No encryption. Only allowed for a server on this machine (e.g. a test server).
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmtpCredentials {
+    pub username: String,
+    pub password: Secret,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthcheckConfig {
+    /// Ping URL. Anyone holding it can report the service as alive, so it is kept secret.
+    pub url: Secret,
+    pub interval: Duration,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -91,7 +157,7 @@ impl Config {
         let data_dir =
             PathBuf::from(get("DATA_DIR").unwrap_or_else(|| DEFAULT_DATA_DIR.to_owned()));
 
-        Ok(Self {
+        Self {
             repo_name,
             commit_time,
             min_commits,
@@ -102,7 +168,21 @@ impl Config {
             author_email: get("GIT_AUTHOR_EMAIL"),
             run_on_start: parse_bool("RUN_ON_START", get("RUN_ON_START"), false)?,
             catch_up: parse_bool("CATCH_UP", get("CATCH_UP"), true)?,
-        })
+            email: None,
+            healthcheck: None,
+        }
+        .with_notifications(&get)
+    }
+
+    fn with_notifications(
+        mut self,
+        get: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, ConfigError> {
+        if parse_bool("NOTIFY_ENABLED", get("NOTIFY_ENABLED"), true)? {
+            self.email = parse_email(get)?;
+            self.healthcheck = parse_healthcheck(get)?;
+        }
+        Ok(self)
     }
 
     /// Where the target repository is cloned: `$DATA_DIR/$REPO_NAME`.
@@ -171,6 +251,159 @@ fn parse_bool(
         "0" | "false" | "no" | "off" => Ok(false),
         _ => Err(invalid(var, &value, "expected true or false")),
     }
+}
+
+fn parse_email(get: &impl Fn(&str) -> Option<String>) -> Result<Option<EmailConfig>, ConfigError> {
+    let Some(smtp_host) = get("SMTP_HOST") else {
+        for var in [
+            "NOTIFY_EMAIL_TO",
+            "NOTIFY_EMAIL_FROM",
+            "SMTP_USERNAME",
+            "SMTP_PASSWORD",
+        ] {
+            if let Some(value) = get(var) {
+                let shown = if var == "SMTP_PASSWORD" {
+                    "[redacted]"
+                } else {
+                    &value
+                };
+                return Err(invalid(var, shown, "has no effect without SMTP_HOST"));
+            }
+        }
+        return Ok(None);
+    };
+
+    let smtp_port = match get("SMTP_PORT") {
+        None => DEFAULT_SMTP_PORT,
+        Some(value) => value
+            .parse::<u16>()
+            .ok()
+            .filter(|&port| port != 0)
+            .ok_or_else(|| invalid("SMTP_PORT", &value, "expected a port number"))?,
+    };
+
+    let tls = match get("SMTP_TLS").map(|v| v.to_ascii_lowercase()).as_deref() {
+        None if smtp_port == 465 => SmtpTls::Implicit,
+        None => SmtpTls::StartTls,
+        Some("implicit") => SmtpTls::Implicit,
+        Some("starttls") => SmtpTls::StartTls,
+        Some("none") if is_loopback(&smtp_host) => SmtpTls::None,
+        Some("none") => {
+            return Err(invalid(
+                "SMTP_TLS",
+                "none",
+                "only allowed when SMTP_HOST is this machine (localhost, 127.0.0.1, ::1)",
+            ));
+        }
+        Some(other) => {
+            return Err(invalid(
+                "SMTP_TLS",
+                other,
+                "expected implicit, starttls or none",
+            ));
+        }
+    };
+
+    let credentials = match (get("SMTP_USERNAME"), get("SMTP_PASSWORD")) {
+        (Some(username), Some(password)) => Some(SmtpCredentials {
+            username,
+            password: Secret::new(password),
+        }),
+        (None, None) => None,
+        (Some(username), None) => {
+            return Err(invalid(
+                "SMTP_USERNAME",
+                &username,
+                "SMTP_PASSWORD is not set",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(invalid(
+                "SMTP_PASSWORD",
+                "[redacted]",
+                "SMTP_USERNAME is not set",
+            ));
+        }
+    };
+
+    let from = match get("NOTIFY_EMAIL_FROM") {
+        Some(value) => parse_mailbox("NOTIFY_EMAIL_FROM", &value)?,
+        None => credentials
+            .as_ref()
+            .and_then(|c| c.username.parse::<Mailbox>().ok())
+            .ok_or_else(|| {
+                invalid(
+                    "NOTIFY_EMAIL_FROM",
+                    "",
+                    "required when SMTP_USERNAME is not an email address",
+                )
+            })?,
+    };
+    let from = match from.name {
+        Some(_) => from,
+        None => Mailbox::new(Some(EMAIL_SENDER_NAME.to_owned()), from.email),
+    };
+    let to = match get("NOTIFY_EMAIL_TO") {
+        Some(value) => parse_mailbox("NOTIFY_EMAIL_TO", &value)?,
+        None => Mailbox::new(None, from.email.clone()),
+    };
+
+    Ok(Some(EmailConfig {
+        smtp_host,
+        smtp_port,
+        tls,
+        credentials,
+        from,
+        to,
+    }))
+}
+
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn parse_mailbox(var: &'static str, value: &str) -> Result<Mailbox, ConfigError> {
+    value
+        .parse()
+        .map_err(|_| invalid(var, value, "expected an email address"))
+}
+
+fn parse_healthcheck(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<HealthcheckConfig>, ConfigError> {
+    let interval_minutes = match get("HEALTHCHECK_INTERVAL_MINUTES") {
+        None => DEFAULT_HEALTHCHECK_INTERVAL_MINUTES,
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|m| (1..=24 * 60).contains(m))
+            .ok_or_else(|| {
+                invalid(
+                    "HEALTHCHECK_INTERVAL_MINUTES",
+                    &value,
+                    "expected an integer between 1 and 1440",
+                )
+            })?,
+    };
+    let Some(url) = get("HEALTHCHECK_URL") else {
+        return Ok(None);
+    };
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        // The URL is secret: don't echo it back.
+        return Err(invalid(
+            "HEALTHCHECK_URL",
+            "[redacted]",
+            "expected an http(s) URL, e.g. https://hc-ping.com/<uuid>",
+        ));
+    }
+    Ok(Some(HealthcheckConfig {
+        url: Secret::new(url),
+        interval: Duration::from_secs(interval_minutes * 60),
+    }))
 }
 
 fn validate_log_file(path: &Path) -> Result<(), ConfigError> {
@@ -286,6 +519,149 @@ mod tests {
                 "{var}={value} should be rejected, got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn notifications_off_by_default() {
+        let cfg = load(&with_token(&[])).unwrap();
+        assert_eq!((cfg.email, cfg.healthcheck), (None, None));
+    }
+
+    #[test]
+    fn email_defaults_send_to_self_over_implicit_tls() {
+        let cfg = load(&with_token(&[
+            ("SMTP_HOST", "smtp.gmail.com"),
+            ("SMTP_USERNAME", "me@gmail.com"),
+            ("SMTP_PASSWORD", "app-password"),
+        ]))
+        .unwrap();
+        let email = cfg.email.unwrap();
+        assert_eq!((email.smtp_port, email.tls), (465, SmtpTls::Implicit));
+        assert_eq!(
+            email.from.to_string(),
+            "auto-git-commit-tool <me@gmail.com>"
+        );
+        assert_eq!(email.to.to_string(), "me@gmail.com");
+        assert_eq!(email.credentials.unwrap().username, "me@gmail.com");
+    }
+
+    #[test]
+    fn email_overrides() {
+        let cfg = load(&with_token(&[
+            ("SMTP_HOST", "smtp.example.com"),
+            ("SMTP_PORT", "587"),
+            ("NOTIFY_EMAIL_FROM", "Bot <bot@example.com>"),
+            ("NOTIFY_EMAIL_TO", "me@example.org"),
+        ]))
+        .unwrap();
+        let email = cfg.email.unwrap();
+        assert_eq!((email.smtp_port, email.tls), (587, SmtpTls::StartTls));
+        assert_eq!(email.credentials, None);
+        assert_eq!(email.from.to_string(), "Bot <bot@example.com>");
+        assert_eq!(email.to.to_string(), "me@example.org");
+    }
+
+    #[test]
+    fn plain_smtp_only_on_this_machine() {
+        let tls = |host: &str| {
+            load(&with_token(&[
+                ("SMTP_HOST", host),
+                ("SMTP_TLS", "none"),
+                ("NOTIFY_EMAIL_FROM", "a@b.co"),
+            ]))
+            .map(|cfg| cfg.email.unwrap().tls)
+        };
+        for host in ["localhost", "127.0.0.1", "::1", "[::1]"] {
+            assert_eq!(tls(host), Ok(SmtpTls::None), "{host}");
+        }
+        for host in ["smtp.gmail.com", "10.0.0.1", "localhost.evil.com"] {
+            assert!(tls(host).is_err(), "{host}");
+        }
+    }
+
+    #[test]
+    fn healthcheck_settings() {
+        let cfg = load(&with_token(&[
+            ("HEALTHCHECK_URL", "https://hc-ping.com/abc"),
+            ("HEALTHCHECK_INTERVAL_MINUTES", "10"),
+        ]))
+        .unwrap();
+        let hc = cfg.healthcheck.unwrap();
+        assert_eq!(hc.url.expose(), "https://hc-ping.com/abc");
+        assert_eq!(hc.interval, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn notify_enabled_false_disables_everything() {
+        let cfg = load(&with_token(&[
+            ("NOTIFY_ENABLED", "false"),
+            ("SMTP_HOST", "smtp.gmail.com"),
+            ("NOTIFY_EMAIL_FROM", "me@gmail.com"),
+            ("HEALTHCHECK_URL", "https://hc-ping.com/abc"),
+        ]))
+        .unwrap();
+        assert_eq!((cfg.email, cfg.healthcheck), (None, None));
+    }
+
+    #[test]
+    fn rejects_bad_notification_settings() {
+        let smtp = [("SMTP_HOST", "smtp.gmail.com")];
+        let cases: [(&[(&str, &str)], &str); 9] = [
+            (&[("NOTIFY_EMAIL_TO", "me@gmail.com")], "NOTIFY_EMAIL_TO"),
+            (&[("SMTP_PASSWORD", "pw")], "SMTP_PASSWORD"),
+            (
+                &[smtp[0], ("SMTP_USERNAME", "me@gmail.com")],
+                "SMTP_USERNAME",
+            ),
+            (
+                &[smtp[0], ("SMTP_USERNAME", "me"), ("SMTP_PASSWORD", "pw")],
+                "NOTIFY_EMAIL_FROM",
+            ),
+            (
+                &[smtp[0], ("NOTIFY_EMAIL_FROM", "not an email")],
+                "NOTIFY_EMAIL_FROM",
+            ),
+            (
+                &[smtp[0], ("NOTIFY_EMAIL_FROM", "a@b.c"), ("SMTP_PORT", "0")],
+                "SMTP_PORT",
+            ),
+            (
+                &[smtp[0], ("NOTIFY_EMAIL_FROM", "a@b.c"), ("SMTP_TLS", "ssl")],
+                "SMTP_TLS",
+            ),
+            (&[("HEALTHCHECK_URL", "hc-ping.com/abc")], "HEALTHCHECK_URL"),
+            (
+                &[("HEALTHCHECK_INTERVAL_MINUTES", "0")],
+                "HEALTHCHECK_INTERVAL_MINUTES",
+            ),
+        ];
+        for (vars, var) in cases {
+            let err = load(&with_token(vars)).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid { var: v, .. } if v == var),
+                "{vars:?} should be rejected for {var}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn secrets_never_appear_in_debug_or_errors() {
+        let cfg = load(&with_token(&[
+            ("SMTP_HOST", "smtp.gmail.com"),
+            ("SMTP_USERNAME", "me@gmail.com"),
+            ("SMTP_PASSWORD", "pw-supersecret"),
+            ("HEALTHCHECK_URL", "https://hc-ping.com/uuid-supersecret"),
+        ]))
+        .unwrap();
+        assert!(!format!("{cfg:?}").contains("supersecret"));
+        let err = load(&with_token(&[("SMTP_PASSWORD", "pw-supersecret")])).unwrap_err();
+        assert!(!err.to_string().contains("supersecret"));
+        let err = load(&with_token(&[(
+            "HEALTHCHECK_URL",
+            "ftp://uuid-supersecret",
+        )]))
+        .unwrap_err();
+        assert!(!err.to_string().contains("supersecret"));
     }
 
     #[test]

@@ -69,13 +69,22 @@ pub enum PushResult {
     Interrupted,
 }
 
+/// One commit made by a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    /// The line appended to the log file.
+    pub line: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunOutcome {
     AlreadyDone {
         push: PushResult,
     },
     Committed {
-        made: u32,
+        /// Fewer than `planned` if a shutdown interrupted the batch.
+        commits: Vec<Commit>,
         planned: u32,
         push: PushResult,
     },
@@ -137,7 +146,7 @@ pub fn daily_run(
     let planned = rng.random_range(settings.min_commits..=settings.max_commits);
     info!(date = %today, planned, "starting daily run");
 
-    let mut made = 0;
+    let mut commits = Vec::new();
     for i in 1..=planned {
         if i > 1 {
             let pause = Duration::from_secs(rng.random_range(settings.jitter_secs.clone()));
@@ -149,12 +158,12 @@ pub fn daily_run(
         ws.append_line(&line)?;
         let sha = ws.commit(&commit_message(today, i, planned))?;
         info!(%sha, %line, "committed");
-        made += 1;
+        commits.push(Commit { sha, line });
     }
 
     let push = if clock.shutdown_requested() {
         warn!(
-            made,
+            made = commits.len(),
             planned, "shutdown requested; pushing what was committed"
         );
         push_once(ws)
@@ -162,7 +171,7 @@ pub fn daily_run(
         push_pending(ws, settings, clock)?
     };
     Ok(RunOutcome::Committed {
-        made,
+        commits,
         planned,
         push,
     })
@@ -324,7 +333,7 @@ mod tests {
         let outcome = daily_run(&mut ws, &RunSettings::new(1, 5), &clock, &mut rng()).unwrap();
 
         let RunOutcome::Committed {
-            made,
+            commits,
             planned,
             push,
         } = outcome
@@ -332,7 +341,9 @@ mod tests {
             panic!("expected commits, got {outcome:?}");
         };
         assert!((1..=5).contains(&planned));
-        assert_eq!(made, planned);
+        assert_eq!(commits.len(), planned as usize);
+        assert_eq!(commits[0].line, ws.lines[0]);
+        assert_eq!(commits[0].sha, "0000001");
         assert_eq!(push, PushResult::Pushed);
         assert_eq!(ws.pushes, 1);
         assert!(ws.prepared);
@@ -380,7 +391,7 @@ mod tests {
         };
         let clock = FakeClock::at("2026-09-28T12:00:00Z");
         let outcome = daily_run(&mut ws, &RunSettings::new(1, 1), &clock, &mut rng()).unwrap();
-        assert!(matches!(outcome, RunOutcome::Committed { made: 1, .. }));
+        assert!(matches!(outcome, RunOutcome::Committed { commits, .. } if commits.len() == 1));
     }
 
     #[test]
@@ -412,14 +423,10 @@ mod tests {
         };
         let clock = FakeClock::at("2026-09-28T12:00:00Z");
         let outcome = daily_run(&mut ws, &RunSettings::new(2, 2), &clock, &mut rng()).unwrap();
-        assert_eq!(
-            outcome,
-            RunOutcome::Committed {
-                made: 2,
-                planned: 2,
-                push: PushResult::Failed
-            }
-        );
+        assert!(matches!(
+            &outcome,
+            RunOutcome::Committed { commits, planned: 2, push: PushResult::Failed } if commits.len() == 2
+        ));
         assert!(outcome.needs_retry());
         assert_eq!(ws.unpushed, 2);
     }
@@ -442,13 +449,9 @@ mod tests {
         // First jitter pause is interrupted.
         let clock = FakeClock::at("2026-09-28T12:00:00Z").interrupt_after(0);
         let outcome = daily_run(&mut ws, &RunSettings::new(4, 4), &clock, &mut rng()).unwrap();
-        assert_eq!(
+        assert!(matches!(
             outcome,
-            RunOutcome::Committed {
-                made: 1,
-                planned: 4,
-                push: PushResult::Pushed
-            }
-        );
+            RunOutcome::Committed { commits, planned: 4, push: PushResult::Pushed } if commits.len() == 1
+        ));
     }
 }

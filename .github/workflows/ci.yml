@@ -112,8 +112,9 @@ jobs:
   e2e-github:
     name: E2E against GitHub
     needs: test
-    # Secrets are not available to pull requests from forks.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Real commits and emails: only for code on main, releases and manual runs, not for every PR
+    # (PRs get the offline E2E, including notifications against fake servers, in the test job).
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     concurrency: e2e-github
     env:
@@ -122,6 +123,14 @@ jobs:
       GH_TOKEN: ${{ secrets.E2E_GH_TOKEN }}
       E2E_GITHUB: "1"
       E2E_REPO: ${{ vars.E2E_REPO || 'auto-git-commit-e2e' }}
+      # Optional real notifications. Use a healthcheck separate from production's, or CI pings
+      # would hide a real outage.
+      E2E_SMTP_HOST: ${{ secrets.E2E_SMTP_USERNAME && (vars.E2E_SMTP_HOST || 'smtp.gmail.com') || '' }}
+      E2E_SMTP_PORT: ${{ vars.E2E_SMTP_PORT }}
+      E2E_SMTP_USERNAME: ${{ secrets.E2E_SMTP_USERNAME }}
+      E2E_SMTP_PASSWORD: ${{ secrets.E2E_SMTP_PASSWORD }}
+      E2E_NOTIFY_EMAIL_TO: ${{ vars.E2E_NOTIFY_EMAIL_TO }}
+      E2E_HEALTHCHECK_URL: ${{ secrets.E2E_HEALTHCHECK_URL }}
     steps:
       - name: Skip without E2E_GH_TOKEN secret
         if: env.GH_TOKEN == ''
