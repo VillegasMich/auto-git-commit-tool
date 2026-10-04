@@ -82,7 +82,8 @@ docker buildx build --platform linux/amd64,linux/arm64 -t <you>/auto-git-commit-
 ## Publishing to Docker Hub
 
 CI (`docker` job in [`ci.yml`](../.github/workflows/ci.yml)) pushes the image when a GitHub
-release is **published**. The release tag must be semver (`v1.2.3` or `1.2.3`); it becomes the
+release is **published**, or when run manually on a release tag with *publish* (what the
+[Release workflow](#releasing) does). The release tag must be semver (`v1.2.3` or `1.2.3`); it becomes the
 tags `1.2.3`, `1.2` and `latest` (no `latest` for pre-releases like `v1.3.0-rc.1`), for
 `linux/amd64` and `linux/arm64`. Every other run only builds and does a dry-run push.
 
@@ -104,14 +105,65 @@ gh secret set DOCKERHUB_TOKEN          # paste the token when prompted
 gh variable set DOCKERHUB_USERNAME --body <you>
 ```
 
-Release from an up-to-date, clean `main` with [`scripts/release.sh`](../scripts/release.sh)
+The job fails with an error if the secret or variable is missing. Secrets are not exposed to pull
+requests from forks, and only the publish path logs in.
+
+## Releasing
+
+### From GitHub Actions (recommended)
+
+*Actions* → **Release** → *Run workflow* on `main` ([`release.yml`](../.github/workflows/release.yml)),
+or:
+
+```bash
+gh workflow run release.yml                       # automatic bump if needed (below)
+gh workflow run release.yml -f bump=minor         # force patch, minor or major
+gh workflow run release.yml -f version=1.3.0-rc.1 # exact version
+gh workflow run release.yml -f dry_run=true       # show the version and diff only
+```
+
+The job:
+
+1. Refuses to run on anything but `main`, or if CI hasn't passed on the commit.
+2. If `v<version>` from `Cargo.toml` is already tagged, bumps it with
+   [`scripts/bump-version.sh`](../scripts/bump-version.sh), which also updates `Cargo.lock`, and
+   pushes `chore(release): bump version to X.Y.Z` to `main` as `github-actions[bot]`. A version
+   that isn't released yet is released as is. With `bump=auto` (default) the bump comes from the
+   [Conventional Commits](https://www.conventionalcommits.org/) since that tag (merge commits
+   ignored); the biggest one wins, and the job log lists each commit's:
+
+   | Commits                                               | `1.x.y` and up | `0.x.y`  |
+   | ----------------------------------------------------- | -------------- | -------- |
+   | breaking: `type!:` or a `BREAKING CHANGE:` footer     | major          | minor    |
+   | `feat`, `chore`                                       | minor          | minor    |
+   | anything else (`fix`, `docs`, ..., non-conventional)  | patch          | patch    |
+
+   With no commits since the tag the job fails (nothing to release). `bump=patch|minor|major`
+   forces a bump, `version` sets an exact one.
+3. Runs `scripts/release.sh --yes` (below): tag + GitHub release with generated notes.
+4. Runs CI on the new tag with `publish=true` and waits for it, so the job only goes green once
+   the image is on Docker Hub. (A release created with the workflow's `GITHUB_TOKEN` doesn't
+   trigger CI's `release` event; a manual run does.)
+
+It uses the built-in `GITHUB_TOKEN` (no extra secret), so it needs Docker Hub settings above and
+`main` must accept pushes from GitHub Actions: with branch protection or rulesets on `main`, allow
+the GitHub Actions app to bypass them. The bump commit itself doesn't trigger a push CI run (also
+a `GITHUB_TOKEN` effect); the run on the tag tests it. If the job fails after pushing the bump,
+run CI on `main` (*Actions* → *CI* → *Run workflow*), then rerun **Release**: the bumped version
+isn't released yet, so it's released as is.
+
+To republish an existing release's image: *Actions* → *CI* → *Run workflow*, pick the tag, tick
+*publish*.
+
+### Locally
+
+From an up-to-date, clean `main` with [`scripts/release.sh`](../scripts/release.sh)
 (`--dry-run` to only check, `-y` to skip the prompt). It tags the current commit as
 `v<version>` from `Cargo.toml` and runs `gh release create --generate-notes` (versions like
-`1.3.0-rc.1` become pre-releases). It refuses a version that was already released, or a
-`Cargo.lock` that doesn't match: bump `version` in `Cargo.toml`, run `cargo build`, commit both,
-push, then rerun. The job fails with an error if the secret
-or variable is missing. Secrets are not exposed to pull requests from forks, and only the release
-path logs in.
+`1.3.0-rc.1` become pre-releases), and CI publishes the image on the `release` event. It refuses a
+version that was already released, or a `Cargo.lock` that doesn't match: run
+`scripts/bump-version.sh auto` (or `patch`, `minor`, `major`, an exact version), commit both files,
+push, then rerun.
 
 ## GitHub token
 

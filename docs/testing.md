@@ -90,14 +90,17 @@ E2E_GITHUB=1 cargo test --test e2e github -- --nocapture  # GitHub (uses GH_TOKE
 
 ## CI (`.github/workflows/ci.yml`)
 
-On pushes to `main`, pull requests, manual dispatch and published releases:
+On pushes to `main`, pull requests, manual dispatch and published releases (the **Release**
+workflow, `release.yml`, also dispatches it on the new tag with `publish`; see
+[deployment.md](deployment.md#releasing)):
 
 1. **test** – `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
    (unit + offline E2E).
 2. **docker** (after **test**) – builds the image and runs `simulate --days 2` inside it. Then:
    - PRs, pushes, dispatch: dry-run push – computes the tags and lists them in the job summary,
      nothing is uploaded and no Docker Hub credentials are needed.
-   - Published release: builds `linux/amd64` + `linux/arm64` and pushes to Docker Hub
+   - Published release, or manual dispatch on a `v*` tag with `publish` ticked: builds
+     `linux/amd64` + `linux/arm64` and pushes to Docker Hub
      ([deployment.md](deployment.md#publishing-to-docker-hub)).
 3. **e2e-github** – runs the GitHub E2E test, only for pushes to `main`, releases and manual
    runs (not pull requests: they make real commits and send real emails). Needs a repository

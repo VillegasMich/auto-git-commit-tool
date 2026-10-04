@@ -7,7 +7,8 @@
 #   -y, --yes  don't ask for confirmation.
 #
 # Tags the current commit of main as v<version> and creates the release with --generate-notes.
-# Publishing the release triggers CI, which pushes the Docker image (docs/deployment.md).
+# Publishing the release triggers CI, which pushes the Docker image (docs/deployment.md). For a
+# release made with the workflow's GITHUB_TOKEN no event fires, so release.yml dispatches CI itself.
 # Versions with a pre-release suffix (e.g. 1.2.0-rc.1) are published as pre-releases.
 #
 # Requirements: git, gh (logged in). Must run on an up-to-date, clean main branch. Fails if the
@@ -30,15 +31,18 @@ for arg in "$@"; do
   case $arg in
     --dry-run) dry_run=true ;;
     -y | --yes) yes=true ;;
-    -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument '$arg' (try --help)" ;;
   esac
 done
 
 need git
 need gh "https://cli.github.com"
-gh auth status >/dev/null 2>&1 || die "gh is not logged in; run 'gh auth login'"
 cd "$ROOT"
+# Rather than `gh auth status`, which needs a user token: also works with the GITHUB_TOKEN of the
+# release workflow (.github/workflows/release.yml).
+gh repo view --json name >/dev/null 2>&1 \
+  || die "gh can't access this repository; run 'gh auth login' (or set GH_TOKEN)"
 
 # --- Version ---------------------------------------------------------------------------------
 # First `version = "..."` of the [package] table.

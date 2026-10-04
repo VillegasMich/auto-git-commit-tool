@@ -28,6 +28,8 @@ cargo fmt                      # format (must be clean)
 docker build -t auto-git-commit-tool .
 scripts/install.sh [docker|native]   # install as systemd service (uses sudo)
 scripts/release.sh [--dry-run]       # tag + GitHub release of Cargo.toml version (from main)
+scripts/bump-version.sh [auto|patch|minor|major|X.Y.Z]   # print or bump version (Cargo.toml + .lock)
+gh workflow run release.yml [-f bump=minor] [-f dry_run=true]   # full release from CI (main)
 ```
 
 ## Hard rules
@@ -60,7 +62,8 @@ scripts/release.sh [--dry-run]       # tag + GitHub release of Cargo.toml versio
 - Pure logic worth testing: next-run computation, config validation, log-line formatting, "already ran
   today" detection.
 - Commit messages: Conventional Commits, validated against commitlint `@commitlint/config-conventional`
-  (see below).
+  (see below). They drive the automatic release bump: breaking → major (minor while `0.x.y`),
+  `feat`/`chore` → minor, anything else → patch (`scripts/bump-version.sh auto`).
 
 ## Commit message recommendation (required after every change)
 
