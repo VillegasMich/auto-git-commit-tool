@@ -27,12 +27,16 @@ SUDO=()
 echo "==> Service removed"
 
 if [[ $purge == true ]]; then
+  # A published image configured with IMAGE in the env file is removed too.
+  image=$("${SUDO[@]}" sed -n 's/^IMAGE=//p' /etc/auto-git-commit-tool/env 2>/dev/null | tail -n 1 \
+    || true)
   "${SUDO[@]}" rm -rf /etc/auto-git-commit-tool "/usr/local/bin/$SERVICE" \
     "/var/lib/$SERVICE" "/var/lib/private/$SERVICE"
   if command -v docker >/dev/null 2>&1; then
     "${SUDO[@]}" docker rm --force "$SERVICE" >/dev/null 2>&1 || true
     "${SUDO[@]}" docker volume rm auto-git-commit-data >/dev/null 2>&1 || true
-    "${SUDO[@]}" docker image rm auto-git-commit-tool:latest >/dev/null 2>&1 || true
+    "${SUDO[@]}" docker image rm auto-git-commit-tool:latest ${image:+"$image"} >/dev/null 2>&1 \
+      || true
   fi
   echo "==> Purged config, token, binary, local clone and Docker image/volume"
 fi

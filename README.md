@@ -127,6 +127,7 @@ All configuration is done through environment variables.
 | `RUN_ON_START`     | `false`                       | If `true`, perform a run immediately on startup (if none today).   |
 | `CATCH_UP`         | `true`                        | If started after today's `COMMIT_TIME` with no run today, run now. |
 | `RUST_LOG`         | `info`                        | Log level.                                                         |
+| `IMAGE`            | `auto-git-commit-tool:latest` | systemd docker mode: image to run, e.g. `<user>/auto-git-commit-tool:1.2.3`. |
 | `NOTIFY_ENABLED`   | `true`                        | Master switch: `false` turns off emails and healthcheck pings.     |
 | `SMTP_HOST`        | unset (no email)              | SMTP server for notification emails, e.g. `smtp.gmail.com`.        |
 | `SMTP_PORT`        | `465`                         | `465` = implicit TLS, anything else = STARTTLS (e.g. `587`).       |

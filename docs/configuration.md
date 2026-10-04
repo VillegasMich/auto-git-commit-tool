@@ -72,6 +72,16 @@ Set to `false` to only ever commit at `COMMIT_TIME`.
 
 Log filter for `tracing-subscriber` (`error`, `warn`, `info`, `debug`, `trace`).
 
+## Deployment (systemd, docker mode)
+
+### `IMAGE` (default: `auto-git-commit-tool:latest`, built locally)
+
+Docker image the systemd unit runs. Read by [`scripts/install.sh`](../scripts/install.sh) and the
+docker unit, not by the service itself. Unset (or the default): the installer builds the image
+from your checkout. Set to a published image, e.g. `<user>/auto-git-commit-tool:1.2.3`: the
+installer pulls it instead. Pin a version rather than `latest` so an upgrade is an explicit edit.
+See [deployment.md](deployment.md#upgrading).
+
 ## Notifications (optional)
 
 Setup guide: [tutorials/notifications.md](tutorials/notifications.md). Verify with the

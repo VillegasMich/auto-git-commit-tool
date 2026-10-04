@@ -25,15 +25,17 @@ Run the script as your normal user; it calls `sudo` for system changes. It:
 
 1. Checks the host requirements for the chosen mode.
 2. Takes the token from `$GH_TOKEN`, or from your `gh` login, and checks it against GitHub.
-3. Builds the image (`auto-git-commit-tool:latest`), or installs `target/release/auto-git-commit-tool`
-   to `/usr/local/bin` (building it with cargo if it isn't built yet).
+3. Builds the image (`auto-git-commit-tool:latest`), or pulls [`IMAGE`](configuration.md#image-default-auto-git-commit-toollatest-built-locally)
+   if it is set to a published image, or installs `target/release/auto-git-commit-tool` to
+   `/usr/local/bin` (building it with cargo if it isn't built yet).
 4. Writes `/etc/auto-git-commit-tool/env` (root-only, mode 600) with `GH_TOKEN` and any exported
    settings. An existing file is kept unless you pass `--reconfigure`.
 5. Installs `/etc/systemd/system/auto-git-commit-tool.service` from
    [`deploy/systemd/`](../deploy/systemd/), enables it on boot and (re)starts it.
 
-Re-run it after pulling new code to rebuild and restart. Switching mode is just running it with the
-other mode (the unit name stays the same).
+Re-run it after pulling new code to rebuild and restart (or see [Upgrading](#upgrading) to use a
+published image). Switching mode is just running it with the other mode (the unit name stays the
+same).
 
 ```bash
 systemctl status auto-git-commit-tool
@@ -45,10 +47,34 @@ scripts/uninstall.sh --purge    # also delete env file, binary, clone, image and
 
 To change settings later: `sudoedit /etc/auto-git-commit-tool/env && sudo systemctl restart auto-git-commit-tool`.
 
+### Upgrading
+
+To run a [published release](#publishing-to-docker-hub) instead of building locally, set `IMAGE`
+in the env file and re-run the installer:
+
+```bash
+sudoedit /etc/auto-git-commit-tool/env      # IMAGE=<user>/auto-git-commit-tool:1.3.0
+scripts/install.sh                          # pulls the image, then restarts the service on it
+# or, without editing the file (the exported value is written to it):
+IMAGE=<user>/auto-git-commit-tool:1.3.0 scripts/install.sh
+```
+
+The pull happens before the restart, so a typo or a missing tag fails the script and leaves the
+running version alone. The restart stops the old container gracefully; the clone in the
+`auto-git-commit-data` volume is reused and a day's commits are never doubled, so upgrading at
+any time is safe. To roll back, set the previous tag and re-run. Removing `IMAGE` (or
+`--reconfigure` without exporting it) goes back to the locally built image.
+
+A plain `sudo systemctl restart auto-git-commit-tool` also picks up a changed `IMAGE` (Docker
+pulls a tag that isn't present yet), but never re-pulls a tag it already has, such as `latest`.
+Requires a unit installed by this version of the script (one with `EnvironmentFile=`); re-run
+the installer once if yours is older.
+
 ### Units
 
 - **docker** – `Requires=docker.service`, removes a stale container left by an unclean stop,
-  runs the container in the foreground with `--env-file` and the `auto-git-commit-data` volume,
+  runs `$IMAGE` (from the env file, default `auto-git-commit-tool:latest`) in the foreground with
+  `--env-file` and the `auto-git-commit-data` volume,
   and `--hostname %H` (the host's name, shown in notification emails), `Restart=always`. `systemctl stop` → `docker stop --time 30` → `SIGTERM` to the service.
 - **native** – `DynamicUser=yes` with `StateDirectory=auto-git-commit-tool`: the clone and the
   git/gh config live in `/var/lib/auto-git-commit-tool` (`HOME` points there, so your own
