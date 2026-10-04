@@ -1,6 +1,6 @@
 [package]
 name = "auto-git-commit-tool"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Service that makes a few commits per day to a private GitHub repo to keep the contribution graph active"
 publish = false
