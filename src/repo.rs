@@ -33,8 +33,11 @@ impl GitRepo {
         dir.join(".git").is_dir()
     }
 
+    /// Base of every `git` call in the clone. `TZ=UTC` covers `commit` and the committer date a
+    /// rebase rewrites: GitHub's graph uses the commit's own offset, so a host timezone would put
+    /// a commit on a different day than its log line.
     fn git(&self) -> Cmd {
-        Cmd::new("git").arg("-C").arg(&self.dir)
+        Cmd::new("git").arg("-C").arg(&self.dir).env("TZ", "UTC")
     }
 
     fn git_net(&self) -> Cmd {
@@ -72,6 +75,16 @@ impl GitRepo {
     fn rebase_in_progress(&self) -> bool {
         let git_dir = self.git_dir();
         git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists()
+    }
+
+    /// Short SHA and author timestamp, with its stored offset, of the latest commit.
+    /// `None` if the repository has no commits yet.
+    pub fn last_commit(&self) -> Result<Option<String>> {
+        if !self.has_head() {
+            return Ok(None);
+        }
+        let commit = self.git().args(["log", "-1", "--format=%h %aI"]).run()?;
+        Ok(Some(commit))
     }
 }
 
@@ -279,6 +292,74 @@ mod tests {
         repo.push().unwrap();
         assert_eq!(repo.unpushed_commits().unwrap(), 0);
         repo.sync().unwrap();
+    }
+
+    #[test]
+    fn last_commit_shows_short_sha_and_utc_timestamp() {
+        let (_tmp, mut repo) = setup();
+        repo.append_line("2026-09-28 | x | commit 1/1").unwrap();
+        let sha = repo.commit("chore: daily log 2026-09-28 (1/1)").unwrap();
+
+        let last = repo.last_commit().unwrap().unwrap();
+
+        let (shown_sha, timestamp) = last.split_once(' ').unwrap();
+        assert_eq!(shown_sha, sha);
+        // Parsed because git prints UTC as `Z` or `+00:00` depending on its version.
+        let at = chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+        assert_eq!(at.offset().local_minus_utc(), 0, "{last}");
+    }
+
+    #[test]
+    fn last_commit_is_none_without_commits() {
+        let tmp = TempDir::new().unwrap();
+        Cmd::new("git")
+            .args(["init", "--quiet"])
+            .arg(tmp.path())
+            .run()
+            .unwrap();
+        let repo = GitRepo::new(tmp.path().to_owned(), PathBuf::from("activity.log"));
+
+        assert_eq!(repo.last_commit().unwrap(), None);
+    }
+
+    /// Can only fail on a non-UTC host, e.g. `TZ=Asia/Tokyo cargo test`. The E2E test
+    /// `offline_commits_are_stamped_utc_whatever_the_host_timezone` covers `commit` on any host.
+    #[test]
+    fn sync_keeps_rebased_commits_in_utc() {
+        let (tmp, mut repo) = setup();
+        // The remote moves on, so `sync` has to rewrite the local commit.
+        let seed = tmp.path().join("seed");
+        let remote = tmp.path().join("remote.git");
+        fs::write(seed.join("other.txt"), "other\n").unwrap();
+        let in_seed = |args: &[&str]| Cmd::new("git").arg("-C").arg(&seed).args(args).run();
+        in_seed(&["add", "other.txt"]).unwrap();
+        in_seed(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "remote change",
+        ])
+        .unwrap();
+        in_seed(&["push", "-q", remote.to_str().unwrap(), "main"]).unwrap();
+        repo.append_line("local").unwrap();
+        repo.commit("local change").unwrap();
+        let head = |repo: &GitRepo| repo.git().args(["rev-parse", "HEAD"]).run().unwrap();
+        let before = head(&repo);
+
+        repo.sync().unwrap();
+
+        assert_ne!(head(&repo), before, "sync must have rebased");
+        let dates = repo
+            .git()
+            .args(["log", "-1", "--date=raw", "--format=%ad %cd"])
+            .run()
+            .unwrap();
+        assert_eq!(dates.matches(" +0000").count(), 2, "{dates}");
     }
 
     #[test]

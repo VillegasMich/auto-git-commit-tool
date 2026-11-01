@@ -56,6 +56,7 @@ impl ExecError {
 pub struct Cmd {
     program: String,
     args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
     timeout: Duration,
 }
 
@@ -64,6 +65,7 @@ impl Cmd {
         Self {
             program: program.to_owned(),
             args: Vec::new(),
+            env: Vec::new(),
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -80,6 +82,14 @@ impl Cmd {
     {
         self.args
             .extend(args.into_iter().map(|a| a.as_ref().to_owned()));
+        self
+    }
+
+    /// Sets an environment variable for this command only. The value must not be a secret: it
+    /// shows up in this type's `Debug` output.
+    pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        self.env
+            .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
         self
     }
 
@@ -100,6 +110,7 @@ impl Cmd {
             .env("GH_PROMPT_DISABLED", "1")
             .env("GH_NO_UPDATE_NOTIFIER", "1")
             .env("GH_SPINNER_DISABLED", "1")
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -180,6 +191,18 @@ mod tests {
     fn captures_stdout() {
         let out = Cmd::new("sh").args(["-c", "echo hello"]).run().unwrap();
         assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn env_reaches_the_command_and_overrides_the_inherited_value() {
+        let script = "echo \"$TZ $GIT_TERMINAL_PROMPT\"";
+        let out = Cmd::new("sh")
+            .args(["-c", script])
+            .env("TZ", "UTC")
+            .env("GIT_TERMINAL_PROMPT", "1")
+            .run()
+            .unwrap();
+        assert_eq!(out, "UTC 1");
     }
 
     #[test]
