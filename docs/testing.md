@@ -69,6 +69,7 @@ the expected result: number of lines, dates, `commit i/n` numbering, first commi
 | `offline_simulation_matches_expected_log`    | 3 days × 3 commits; remote has the same file and 1 + 9 commits.  |
 | `offline_catch_up_after_missed_commit_time`  | Start at 18:30 after a 12:00 slot → runs at 18:30.               |
 | `offline_without_catch_up_waits_for_next_day`| `CATCH_UP=false` → first run next day at 12:00.                  |
+| `offline_commits_are_stamped_utc_whatever_the_host_timezone` | Binary run with `TZ` set to UTC+9: the daily commits still have `+0000` author and committer offsets, while the sandbox's initial commit (not made by `GitRepo`) shows `+0900`, proving the zone was in effect. |
 | `offline_simulation_sends_notifications`     | `--notify` against a fake SMTP server and a fake ping server on localhost (`SMTP_TLS=none`): one ping; subjects `2 commits pushed` × 2 and `service stopped`, nothing for the restart; sender/recipient; each log line and commit link in the email. |
 | `offline_undeliverable_notification_fails_simulation` | SMTP server unreachable → `simulate --notify` fails. |
 | `github_simulation_matches_expected_log`     | 2 days × 2 commits via `--github`; repo is private and the file fetched from the GitHub API equals the local one. With `E2E_SMTP_*` / `E2E_HEALTHCHECK_URL`: also `--notify` with real Gmail/healthchecks.io (3 emails sent, 1 ping). |

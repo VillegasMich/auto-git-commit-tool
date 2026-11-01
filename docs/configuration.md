@@ -21,8 +21,13 @@ If a repository with this name already exists it is reused as-is (even if public
 Time of the daily run, `HH:MM` 24-hour format, **UTC**. All commits of the day are made in a
 single batch starting at this time.
 
-Tip: choose a time that falls on the same calendar day in your local timezone, since GitHub's
-contribution graph buckets commits by the commit timestamp's date.
+Commits are stamped in UTC whatever the host's timezone, so GitHub's contribution graph counts
+them on the **UTC day**, the same date as in `LOG_FILE`. That can differ from your local day: an
+evening run in the Americas shows on the next day. For example, `COMMIT_TIME=02:30` is 19:30 the
+evening before in California (PDT), but the graph shows that run on the UTC date.
+
+Tip: to have the graph day match your local day too, choose a time that falls on the same calendar
+date in UTC and in your timezone.
 
 ### `MIN_COMMITS` / `MAX_COMMITS` (defaults: `1` / `5`)
 

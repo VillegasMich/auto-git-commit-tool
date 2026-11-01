@@ -334,6 +334,46 @@ fn offline_without_catch_up_waits_for_next_day() {
 }
 
 #[test]
+fn offline_commits_are_stamped_utc_whatever_the_host_timezone() {
+    let sandbox = TempDir::new().unwrap();
+    let dir = sandbox.path().join("sim");
+    simulate(
+        &[
+            // UTC+9 in POSIX form: no tz database needed, so it can't silently fall back to UTC.
+            ("TZ", "TST-9"),
+            ("COMMIT_TIME", "12:00"),
+            ("MIN_COMMITS", "2"),
+            ("MAX_COMMITS", "2"),
+        ],
+        &[
+            "--start",
+            "2030-01-01T11:59:00Z",
+            "--sandbox",
+            dir.to_str().unwrap(),
+        ],
+    );
+
+    let remote = dir.join("remote.git");
+    let log = git(&[
+        "--git-dir",
+        remote.to_str().unwrap(),
+        "log",
+        "--date=raw",
+        "--format=%ad %cd %s",
+        "main",
+    ]);
+    let lines: Vec<&str> = log.lines().collect();
+    let (initial, daily) = lines.split_last().unwrap();
+    assert_eq!(daily.len(), 2, "{log}");
+    for commit in daily {
+        assert_eq!(commit.matches(" +0000").count(), 2, "{log}");
+    }
+    // The sandbox's initial commit stands in for GitHub's and doesn't go through `GitRepo`, so it
+    // keeps the process timezone: proof that the host timezone really was non-UTC here.
+    assert_eq!(initial.matches(" +0900").count(), 2, "{log}");
+}
+
+#[test]
 fn offline_simulation_sends_notifications() {
     let (smtp_port, emails) = fake_server(smtp_session);
     let (http_port, pings) = fake_server(http_session);

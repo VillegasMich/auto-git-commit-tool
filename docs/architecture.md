@@ -11,7 +11,9 @@ at a fixed time of day.
 - **Single static binary + two external tools.** The Rust binary orchestrates; `git` and `gh`
   do the actual work. They are invoked via `std::process::Command`. No libgit2, no GitHub REST client.
 - **`gh` is a hard dependency.** The service refuses to start if `gh` is missing or unauthenticated.
-- **UTC everywhere.** Scheduling and timestamps use UTC; the container timezone is irrelevant.
+- **UTC everywhere.** Scheduling, log timestamps and commit dates use UTC; the host or container
+  timezone is irrelevant. Commits are stamped `+0000`, so the date in `LOG_FILE` and the day on the
+  contribution graph always match.
 - **Idempotent daily runs.** Restarting the container must never produce a second batch of commits
   for the same day.
 - **Fail loud, keep running.** A failed run is logged and retried; it does not crash the service.
@@ -75,7 +77,7 @@ simulation.
 
 Afterwards a service restart is simulated at the final simulated time, which must report
 "already committed today". The resulting log file is printed and the sandbox removed (`--keep`
-keeps it). Log lines use simulated time; git commit dates are real wall-clock time.
+keeps it). Log lines use simulated time; git commit dates are real wall-clock time, stamped UTC.
 See [testing.md](testing.md) for how the E2E tests use it.
 
 ## Startup flow
@@ -149,6 +151,12 @@ cleanly. A second signal exits immediately.
 
 The timestamp is taken at the moment the line is written, so it reflects the real execution time.
 The date field is the run's date, so all lines of one batch share it.
+
+Commits are stamped in UTC: every `git` call on the clone runs with `TZ=UTC` (set per command in
+`GitRepo::git()`, not for the whole process and not for `gh`). That covers `git commit` and the
+committer date `git pull --rebase` rewrites. GitHub's graph uses the offset stored in the commit,
+so with `+0000` the graph day is the UTC day, the same date as the log line. A batch that crosses
+midnight UTC is the one exception: its lines keep the run's date, but later commits get the new day.
 
 ## Recovery after restart or crash
 

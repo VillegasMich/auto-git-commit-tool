@@ -163,6 +163,10 @@ GitHub only counts a commit on your contribution graph when:
   Otherwise private commits are not shown. Step-by-step guide:
   [Enable private contributions](docs/tutorials/enable-private-contributions.md).
 
+Commits are stamped in UTC, whatever the host's timezone, so the graph counts them on the UTC day,
+the same date as in the log file. An evening run in the Americas shows on the next day; see
+[`COMMIT_TIME`](docs/configuration.md#commit_time-default-1200).
+
 ## Token permissions
 
 - **Classic PAT:** `repo` scope.
