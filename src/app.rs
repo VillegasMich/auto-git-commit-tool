@@ -229,6 +229,10 @@ pub fn status(config: Config, clock: SystemClock) -> Result<()> {
         println!("clone:        {}", dir.display());
         println!("last entry:   {}", last.as_deref().unwrap_or("(none)"));
         println!(
+            "last commit:  {}",
+            repo.last_commit()?.as_deref().unwrap_or("(none)")
+        );
+        println!(
             "today (UTC):  {} — {}",
             now.date_naive(),
             if ran_today { "done" } else { "pending" }

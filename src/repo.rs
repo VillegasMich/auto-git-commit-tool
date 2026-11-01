@@ -76,6 +76,16 @@ impl GitRepo {
         let git_dir = self.git_dir();
         git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists()
     }
+
+    /// Short SHA and author timestamp, with its stored offset, of the latest commit.
+    /// `None` if the repository has no commits yet.
+    pub fn last_commit(&self) -> Result<Option<String>> {
+        if !self.has_head() {
+            return Ok(None);
+        }
+        let commit = self.git().args(["log", "-1", "--format=%h %aI"]).run()?;
+        Ok(Some(commit))
+    }
 }
 
 impl Workspace for GitRepo {
@@ -282,6 +292,34 @@ mod tests {
         repo.push().unwrap();
         assert_eq!(repo.unpushed_commits().unwrap(), 0);
         repo.sync().unwrap();
+    }
+
+    #[test]
+    fn last_commit_shows_short_sha_and_utc_timestamp() {
+        let (_tmp, mut repo) = setup();
+        repo.append_line("2026-09-28 | x | commit 1/1").unwrap();
+        let sha = repo.commit("chore: daily log 2026-09-28 (1/1)").unwrap();
+
+        let last = repo.last_commit().unwrap().unwrap();
+
+        let (shown_sha, timestamp) = last.split_once(' ').unwrap();
+        assert_eq!(shown_sha, sha);
+        // Parsed because git prints UTC as `Z` or `+00:00` depending on its version.
+        let at = chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+        assert_eq!(at.offset().local_minus_utc(), 0, "{last}");
+    }
+
+    #[test]
+    fn last_commit_is_none_without_commits() {
+        let tmp = TempDir::new().unwrap();
+        Cmd::new("git")
+            .args(["init", "--quiet"])
+            .arg(tmp.path())
+            .run()
+            .unwrap();
+        let repo = GitRepo::new(tmp.path().to_owned(), PathBuf::from("activity.log"));
+
+        assert_eq!(repo.last_commit().unwrap(), None);
     }
 
     /// Can only fail on a non-UTC host, e.g. `TZ=Asia/Tokyo cargo test`. The E2E test

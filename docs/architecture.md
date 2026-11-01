@@ -50,7 +50,7 @@ Configuration always comes from environment variables; the CLI only selects what
 | ----------------------------- | ----------------------------------------------------------------------- |
 | `daemon` (default, no args)   | Long-running service: startup flow below, then one run per day.         |
 | `once`                        | Startup flow, one (idempotent) run now, exit. Non-zero if push failed.  |
-| `status`                      | Read-only report: account, repo, last log line, done today?, next run.  |
+| `status`                      | Read-only report: account, repo, last log line, last commit (short SHA, author timestamp with its stored offset), done today?, next run. |
 | `check`                       | Validate config, tools, authentication and SMTP login, then exit.       |
 | `notify-test`                 | Send a test email and one healthcheck ping (no GitHub needed).          |
 | `simulate [--days N] [--start T] [--keep] [--sandbox DIR] [--github [--repo NAME]] [--notify]` | Test mode, see below. |

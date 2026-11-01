@@ -92,7 +92,7 @@ volumes:
 ```text
 auto-git-commit-tool [daemon]   # run forever, once per day at COMMIT_TIME (default)
 auto-git-commit-tool once       # today's run now (no-op if already done today), then exit
-auto-git-commit-tool status     # account, repo, last entry, done today?, next run
+auto-git-commit-tool status     # account, repo, last entry, last commit, done today?, next run
 auto-git-commit-tool check      # validate config, git/gh, authentication and SMTP login
 auto-git-commit-tool notify-test # send a test email and one healthcheck ping
 auto-git-commit-tool simulate   # test: simulated clock reaches COMMIT_TIME now, local sandbox repo
